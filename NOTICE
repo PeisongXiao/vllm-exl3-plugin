@@ -1,5 +1,8 @@
 vllm-exl3
 Copyright 2026 Victor Cruz (vcruz305)
+FuZev changes Copyright 2026 Peisong Xiao
+FuZev fork maintainer: Peisong Xiao
+Licensed under AGPL-3.0-only (see LICENSE).
 
 EXL3 (ExLlamaV3 trellis/MCG) quantization serving support for vLLM fork runtimes.
 
@@ -13,3 +16,9 @@ This product contains and derives from MIT-licensed software by other authors:
     reimplemented as a torch fallback in src/vllm_exl3/exl3.py (Copyright (c) 2025 Turboderp)
 Their copyright and permission notices are reproduced in THIRD_PARTY_NOTICES.md,
 which must be retained with any redistribution.
+
+Qwen3.8-Flash-Next backbone: Qwen team, Qwen Community License 1.0.
+EXL3 quantization: turboderp, under the backbone's Qwen Community License 1.0.
+https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/main/LICENSE
+https://huggingface.co/turboderp/Qwen3.8-Flash-Next-exl3
+Dataset attribution and separate license terms: https://github.com/PeisongXiao/fuzev/blob/main/NOTICE

@@ -2650,6 +2650,26 @@ class Exl3Config(QuantizationConfig):
                 return spec
         return None
 
+    def get_ple_embedding_method(self, prefix: str, embedding_dtype: str | None = None):
+        """Adapt packed row lookup to the modern Qwen4Exp PLE interface."""
+        spec = self._ngram_embedding_spec(prefix)
+        if spec is None:
+            return None
+        from vllm.models.qwen4_exp.nvidia.ngram_embedding import (
+            Qwen4ExpPLEEmbeddingMethod,
+        )
+
+        class ModernPLEMethod(Exl3EmbeddingMethod, Qwen4ExpPLEEmbeddingMethod):
+            def create_weights(self, layer, *args, **kwargs):
+                layer._exl3_prefix = prefix
+                return super().create_weights(layer, *args, **kwargs)
+
+            def dequantize(self, layer, embeddings, output_dtype):
+                # embedding() already decodes only the gathered packed rows.
+                return embeddings.to(output_dtype)
+
+        return ModernPLEMethod(self, spec)
+
     def get_quant_method(self, layer: torch.nn.Module, prefix: str):
         from vllm.model_executor.layers.fused_moe.routed_experts import RoutedExperts
 
@@ -4081,9 +4101,24 @@ def _exl3_register_custom_ops() -> bool:
                 fake_impl=_exl3_ngram_lookup_fake,
             )
         if not hasattr(torch.ops.vllm, "exl3_ngram_lookup_out"):
+            try:
+                from vllm.compilation.breakable_cudagraph import (
+                    eager_break_during_capture,
+                )
+
+                # Disk lookup needs current producer IDs and an in-place output.
+                lookup_out = eager_break_during_capture(
+                    _exl3_ngram_lookup_out_op, materialize=True
+                )
+            except (ImportError, TypeError):
+                lookup_out = _exl3_ngram_lookup_out_op
+                logger.warning(
+                    "Disk-backed n-gram CUDA graphs require vllm-fuzev; "
+                    "registering the plain EXL3 lookup op."
+                )
             direct_register_custom_op(
                 op_name="exl3_ngram_lookup_out",
-                op_func=_exl3_ngram_lookup_out_op,
+                op_func=lookup_out,
                 mutates_args=["out"],
                 fake_impl=_exl3_ngram_lookup_out_fake,
             )

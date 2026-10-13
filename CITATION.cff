@@ -1,10 +1,20 @@
 cff-version: 1.2.0
-message: "If you use this software, please cite it as below."
-title: "vllm-exl3"
+message: "Please cite vllm-exl3 and its FuZev fork, maintained by Peisong Xiao."
+title: "vllm-exl3 FuZev fork"
 type: software
 authors:
   - family-names: Cruz
     given-names: Victor
     alias: vcruz305
-repository-code: "https://github.com/vcruz305/vllm-exl3"
+  - family-names: Xiao
+    given-names: Peisong
 license: AGPL-3.0-only
+references:
+  - type: software
+    title: "vllm-exl3"
+    authors:
+      - family-names: Cruz
+        given-names: Victor
+        alias: vcruz305
+    repository-code: "https://github.com/vcruz305/vllm-exl3"
+    license: AGPL-3.0-only

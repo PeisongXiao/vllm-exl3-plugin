@@ -183,5 +183,5 @@ jobs:
 
       - name: Build SDist and Pure-Python Wheel
         run: |
-          VLLM_EXL3_NO_CUDA=1 python -m build --sdist --wheel
+          python -m build --sdist --wheel
           ls -la dist/

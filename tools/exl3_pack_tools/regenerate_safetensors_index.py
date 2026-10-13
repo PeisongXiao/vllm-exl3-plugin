@@ -1,28 +1,16 @@
-"""Rebuild model.safetensors.index.json from the safetensors files actually present.
+"""Rebuild model.safetensors.index.json from every safetensors header in a pack.
 
-A native EXL3 pack's tensors (trellis / suh / svh / mcg / mul1 / n-gram shards) are pulled from
-turboderp's own shard files, and the resulting file set frequently no longer matches the index
-that shipped with the source checkpoint: files get renamed, split, or dropped, and the index's
-weight_map still names the old files. vLLM's loader trusts the index over `glob`, so a stale
-index makes it skip or mis-source tensors silently rather than fail loudly.
-
-This reads every `*.safetensors` header (the 8-byte little-endian length prefix, then that many
-bytes of JSON -- no tensor data is touched) in a pack directory and writes a fresh
-model.safetensors.index.json: `metadata.total_size` is the sum of each tensor's
-`data_offsets` span, and `weight_map` names every tensor's file. The original index, if any, is
-backed up to `model.safetensors.index.json.native` (not overwritten if that backup already
-exists, so re-running is safe). Refuses (exit 2) if the same tensor name appears in more than
-one shard, since the index format cannot represent that and something upstream is wrong.
-
-usage: python3 regenerate_safetensors_index.py <pack_dir> [--dry-run]
+Only headers are read. The index is replaced atomically, including when the
+existing index is a symlink; the symlink's target stays unchanged.
 """
+
 import argparse
-import glob
 import json
 import os
-import shutil
 import struct
 import sys
+import tempfile
+from pathlib import Path
 
 
 def read_header(path):
@@ -31,54 +19,61 @@ def read_header(path):
         return json.loads(f.read(n))
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("pack")
-    ap.add_argument("--dry-run", action="store_true")
-    args = ap.parse_args()
-
-    shards = sorted(glob.glob(os.path.join(args.pack, "*.safetensors")))
+def build_index(pack: Path) -> dict:
+    shards = sorted(pack.glob("*.safetensors"))
     if not shards:
-        print(f"ERROR: no *.safetensors files under {args.pack}")
-        return 2
+        raise ValueError(f"No *.safetensors files under {pack}")
 
     weight_map = {}
     total_size = 0
-    dupes = []
     for shard in shards:
-        base = os.path.basename(shard)
-        header = read_header(shard)
-        for name, meta in header.items():
-            if name == "__metadata__":
-                continue
+        tensors = {name: meta for name, meta in read_header(shard).items()
+                   if name != "__metadata__"}
+        for name, meta in tensors.items():
             if name in weight_map:
-                dupes.append((name, weight_map[name], base))
-                continue
-            weight_map[name] = base
-            offsets = meta.get("data_offsets") or [0, 0]
-            total_size += int(offsets[1]) - int(offsets[0])
+                raise ValueError(
+                    f"Tensor {name} appears in both {weight_map[name]} and {shard.name}"
+                )
+            weight_map[name] = shard.name
+            start, end = meta["data_offsets"]
+            total_size += int(end) - int(start)
 
-    if dupes:
-        print(f"REFUSE: {len(dupes)} tensor name(s) appear in more than one shard:")
-        for name, first, second in dupes[:10]:
-            print(f"  {name}: {first} and {second}")
+    return {"metadata": {"total_size": total_size}, "weight_map": weight_map}
+
+
+def write_index(pack: Path, index: dict) -> None:
+    index_path = pack / "model.safetensors.index.json"
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=pack, prefix=index_path.name + ".",
+            suffix=".tmp", delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(index, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.replace(temporary, index_path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("pack", type=Path)
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+    try:
+        index = build_index(args.pack)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
         return 2
-
-    print(f"scanned {len(shards)} shard(s), {len(weight_map)} tensor(s), total_size={total_size}")
-    if args.dry_run:
-        return 0
-
-    index_path = os.path.join(args.pack, "model.safetensors.index.json")
-    backup_path = index_path + ".native"
-    if os.path.exists(index_path) and not os.path.exists(backup_path):
-        shutil.copyfile(index_path, backup_path)
-        print(f"backed up existing index to {backup_path}")
-
-    index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
-    with open(index_path, "w", encoding="utf-8") as f:
-        json.dump(index, f, indent=2, sort_keys=True)
-        f.write("\n")
-    print(f"wrote {index_path}")
+    files = set(index["weight_map"].values())
+    print(f"scanned {len(files)} shard(s), {len(index['weight_map'])} tensor(s), "
+          f"total_size={index['metadata']['total_size']}")
+    if not args.dry_run:
+        write_index(args.pack, index)
+        print(f"wrote {args.pack / 'model.safetensors.index.json'}")
     return 0
 
 

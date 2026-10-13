@@ -1,12 +1,12 @@
 """CPU tests for the two n-gram table layouts (``shard_<i>.trellis`` and one unsharded
 ``trellis``) and the two table homes (resident tensor, memory-mapped checkpoint views)."""
 
-import importlib.util
 import json
 import os
 import struct
 import subprocess
 import sys
+from functools import partial
 
 import pytest
 import torch
@@ -15,12 +15,9 @@ pytest.importorskip("vllm")
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.join(_HERE, "..")
-_EXL3_PATH = os.path.join(_ROOT, "src", "vllm_exl3", "exl3.py")
 _SCAN = os.path.join(_ROOT, "tools", "exl3_pack_tools", "qwen_pack_scan.py")
 
-_spec = importlib.util.spec_from_file_location("_exl3_ngram_layouts", _EXL3_PATH)
-X = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(X)
+from vllm_exl3 import exl3 as X
 
 ROOT = "model.layers.1.ple.ple_embedding.ngram_embedding"
 BITS, HEADS, ROWS = 3, 2, 64
@@ -122,6 +119,47 @@ def _build(method, table: torch.Tensor, sharded: bool):
 
 def _lookup(method, layer, ids):
     return method._embedding_impl(layer, ids)
+
+
+@pytest.mark.parametrize("api", ["stock", "fork"])
+def test_custom_ops_register_and_lookup_with_supported_decorators(monkeypatch, api):
+    import vllm.compilation.breakable_cudagraph as breakable
+    import vllm.utils.torch_utils as torch_utils
+
+    if api == "stock":
+        monkeypatch.setattr(breakable, "eager_break_during_capture", lambda fn: fn)
+
+    namespace = f"exl3_registration_{api}"
+    library = torch.library.Library(namespace, "DEF")
+    ops = getattr(torch.ops, namespace)
+    monkeypatch.setattr(torch.ops, "vllm", ops)
+    monkeypatch.setattr(
+        torch_utils,
+        "direct_register_custom_op",
+        partial(
+            torch_utils.direct_register_custom_op,
+            target_lib=library,
+            dispatch_key="CPU",
+        ),
+    )
+    monkeypatch.setattr(X, "_EXL3_OPS_READY", False)
+    monkeypatch.setattr(X, "_EXL3_OPAQUE_LAYERS", {})
+    assert X._exl3_register_custom_ops()
+    method = _method({}, "disk", monkeypatch)
+    layer = _build(method, _table(2), sharded=True)
+    ids = torch.tensor([[0, 63, 5, 5]])
+    expected = _lookup(method, layer, ids)
+    name = layer._exl3_opaque_name
+    torch.testing.assert_close(ops.exl3_ngram_lookup(ids, name), expected)
+
+    def lookup(ids):
+        out = torch.empty((*ids.shape, X.NGRAM_ROW_DIM), dtype=expected.dtype)
+        ops.exl3_ngram_lookup_out(ids, name, out)
+        return out
+
+    torch.testing.assert_close(lookup(ids), expected)
+    compiled = torch.compile(lookup, backend="eager", fullgraph=True)
+    torch.testing.assert_close(compiled(ids), expected)
 
 
 def test_unsharded_and_disk_lookups_match_the_resident_sharded_table(monkeypatch):
@@ -289,3 +327,41 @@ def test_embedding_dispatch_through_the_registered_ops_matches_every_layout(monk
     out = torch.empty_like(expected)
     assert torch.ops.vllm.exl3_ngram_lookup_out(ids, disk_layer._exl3_opaque_name, out) is None
     assert torch.equal(out, expected)  # the out-variant wrote in place into the caller's buffer
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA graphs")
+def test_disk_lookup_breakable_capture_replays_current_ids(monkeypatch, tmp_path):
+    from safetensors import safe_open
+    from safetensors.torch import save_file
+
+    import vllm.compilation.breakable_cudagraph as breakable
+
+    table = _table(5)
+    table[:, 0] = torch.tensor(0.01, dtype=torch.float16).view(torch.int16)
+    path = tmp_path / "table.safetensors"
+    save_file({"table": table}, path)
+    method = _method({}, "disk", monkeypatch)
+    with safe_open(path, framework="pt") as checkpoint:
+        layer = _build(method, checkpoint.get_tensor("table"), sharded=True)
+    layer._exl3_ngram_head_bias = layer._exl3_ngram_head_bias.cuda()
+    inputs = torch.tensor([0, 30, 61, 0], device="cuda")
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    try:
+        with torch.cuda.stream(stream):
+            method.embedding(layer, inputs + 1)
+            torch.cuda.synchronize()
+            capture = breakable.BreakableCUDAGraphCapture()
+            with capture:
+                ids = inputs + 1
+                output = method.embedding(layer, ids)
+                result = output.clone()
+            for values in ([4, 31, 60, 4], [62, 1, 32, 1]):
+                inputs.copy_(torch.tensor(values, device="cuda"))
+                expected = method.embedding(layer, inputs + 1).clone()
+                capture.replay()
+                torch.testing.assert_close(result, expected, rtol=0, atol=0)
+            torch.cuda.synchronize()
+    finally:
+        torch.cuda.current_stream().wait_stream(stream)
+        X._EXL3_OPAQUE_LAYERS.pop(layer._exl3_opaque_name, None)

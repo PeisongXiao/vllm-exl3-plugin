@@ -10,7 +10,7 @@ mechanical part of this page.
 |---|---|
 | vLLM release checked | **v0.30.0**, published 2026-09-22 |
 | How | release source tree, read directly: module paths, symbol definitions, class abstract surface, patch-tool targets, doc paths. `tools/check_vllm_compat.py <tree>` |
-| Last GPU-qualified runtime | `0.28.1rc1.dev324`, the runtime behind the 0.4.2 validation table and the Qwen3.8 measurement in the README |
+| Last GPU-qualified runtime | `0.28.1rc1.dev324`, the runtime behind the 0.4.2 validation table |
 | What "checked" is not | not a boot qualification. Registration inside a live engine, `FULL_DECODE_ONLY` capture with the EXL3 ops, and the EP loader seams still need a GB10 run |
 
 A vLLM release is not the same artifact as the fork runtime a recipe ships. The plugin is

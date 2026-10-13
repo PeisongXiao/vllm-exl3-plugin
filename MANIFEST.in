@@ -1,0 +1,4 @@
+include VERSION
+recursive-include csrc *.cpp *.cu *.cuh
+recursive-include docs *.md
+recursive-include tools/exl3_pack_tools *.py *.md

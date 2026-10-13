@@ -107,17 +107,15 @@ def test_find_containing_vma_resolves_heap():
 
 
 @pytest.mark.skipif(
-    not Path("/var/tmp/models/DSV4.1-Flash-EXL3-4.75bpw").is_dir(),
-    reason="real EXL3 checkpoint not mounted on this host",
+    not os.environ.get("VLLM_EXL3_TEST_SAFETENSORS"),
+    reason="set VLLM_EXL3_TEST_SAFETENSORS to a real EXL3 safetensors shard",
 )
 def test_safetensors_view_madv_preserves_later_piece():
     """File-backed: advise piece0 view only; piece1 bytes unchanged."""
     pytest.importorskip("safetensors")
     from safetensors.torch import safe_open
 
-    shard = Path(
-        "/var/tmp/models/DSV4.1-Flash-EXL3-4.75bpw/model-00001-of-00032.safetensors"
-    )
+    shard = Path(os.environ["VLLM_EXL3_TEST_SAFETENSORS"])
     assert shard.is_file()
     with safe_open(str(shard), framework="pt", device="cpu") as f:
         keys = list(f.keys())

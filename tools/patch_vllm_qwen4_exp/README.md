@@ -1,5 +1,10 @@
 # tools/patch_vllm_qwen4_exp
 
+These scripts are for the separate upstream vLLM setup. The `vllm-fuzev`
+engine includes the packed LM-head binding, PLE hook and split vision-QKV
+mapping; do not apply `patch_vllm_qwen4_ple.py` or `patch_vllm_vision_split.py`
+to that fork. EXL3 weights with MTP are unsupported on vllm-fuzev in v1.0.
+
 Three small, idempotent patches to vLLM's own `Qwen4ExpForConditionalGeneration`
 model code (`vllm/models/qwen4_exp/nvidia/`), needed so the
 plugin's `get_quant_method` is actually consulted for the layers a native EXL3
